@@ -72,16 +72,45 @@ class TestExplainChanges:
             processing_date=date(2026, 6, 8),
         )
         provider = TemplateProvider()
-        explanations = explain_changes(report, provider=provider)
+        result = explain_changes(report, provider=provider)
 
         # 3 explanations (new + changed + deleted), not 4
-        assert len(explanations) == 3
-        explained_ids = {list(e.business_key_values.values())[0] for e in explanations}
+        assert len(result.explanations) == 3
+        explained_ids = {list(e.business_key_values.values())[0] for e in result.explanations}
         assert explained_ids == {1, 2, 4}
+        # No warnings when template is used directly
+        assert len(result.warnings) == 0
 
     def test_explain_empty_report(self):
         """No changes → no explanations."""
         report = ChangeReport(processing_date=date(2026, 6, 8))
         provider = TemplateProvider()
-        explanations = explain_changes(report, provider=provider)
-        assert len(explanations) == 0
+        result = explain_changes(report, provider=provider)
+        assert len(result.explanations) == 0
+        assert len(result.warnings) == 0
+
+    def test_explain_batch_fallback_on_failure(self):
+        """If primary provider batch call fails, it should gracefully fall back to template."""
+        from src.scd2_copilot.providers.base import LLMProvider
+
+        class FailingProvider(LLMProvider):
+            @property
+            def name(self) -> str:
+                return "failing_mock"
+            def explain_change(self, record):
+                raise RuntimeError("Should not be called individually")
+            def explain_changes_batch(self, records):
+                raise RuntimeError("Batch call failed")
+
+        report = ChangeReport(
+            new=[ChangeRecord({"id": 1}, ChangeType.NEW)],
+            processing_date=date(2026, 6, 8),
+        )
+        provider = FailingProvider()
+        result = explain_changes(report, provider=provider)
+
+        # Should fall back to template
+        assert len(result.explanations) == 1
+        assert result.explanations[0].provider == "template"
+        assert len(result.warnings) == 1
+        assert "Fell back to template" in result.warnings[0]

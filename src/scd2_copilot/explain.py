@@ -1,11 +1,13 @@
 """Explanation orchestration: generate explanations for all detected changes.
 
 Routes change records through the provider chain: primary → fallback → template.
+Tracks fallback events so the UI can warn the user.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .config import LLMProvider as LLMProviderEnum, Settings
@@ -16,6 +18,15 @@ from .providers.groq import GroqProvider
 from .providers.template import TemplateProvider
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExplainResult:
+    """Result of explanation generation, including any warnings."""
+
+    explanations: list[Explanation] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    provider_used: str = "template"
 
 
 def get_provider(settings: Settings) -> LLMProvider:
@@ -37,10 +48,11 @@ def explain_changes(
     change_report: ChangeReport,
     settings: Optional[Settings] = None,
     provider: Optional[LLMProvider] = None,
-) -> list[Explanation]:
-    """Generate explanations for all non-unchanged changes.
+) -> ExplainResult:
+    """Generate explanations for all non-unchanged changes using batch processing.
 
     Uses a fallback chain: primary provider → alternative → template.
+    Returns an ExplainResult with explanations and any fallback warnings.
 
     Args:
         change_report: The detected changes.
@@ -48,7 +60,7 @@ def explain_changes(
         provider: Override provider instance (for testing).
 
     Returns:
-        List of Explanation objects.
+        ExplainResult with explanations list and warnings list.
     """
     if provider is None:
         if settings is None:
@@ -57,38 +69,49 @@ def explain_changes(
         provider = get_provider(settings)
 
     template = TemplateProvider()
+    result = ExplainResult(provider_used=provider.name)
 
     # Collect all records that need explanation
     records_to_explain: list[ChangeRecord] = (
         change_report.new + change_report.changed + change_report.deleted
     )
 
-    explanations: list[Explanation] = []
-
-    for record in records_to_explain:
-        explanation = _explain_with_fallback(record, provider, template)
-        explanations.append(explanation)
-
-    return explanations
-
-
-def _explain_with_fallback(
-    record: ChangeRecord,
-    primary: LLMProvider,
-    fallback: LLMProvider,
-) -> Explanation:
-    """Try primary provider, fall back to template on failure."""
-    # If primary IS the template, no fallback needed
-    if primary.name == "template":
-        return primary.explain_change(record)
+    if not records_to_explain:
+        return result
 
     try:
-        return primary.explain_change(record)
+        # Run in batch
+        explanations = provider.explain_changes_batch(records_to_explain)
+
+        # Calculate fallback count
+        fallback_count = 0
+        if provider.name != "template":
+            for exp in explanations:
+                if exp.provider == "template":
+                    fallback_count += 1
+
+        result.explanations = explanations
+
+        if fallback_count > 0:
+            result.warnings.append(
+                f"⚠️ {provider.name.capitalize()} API fell back to template "
+                f"for {fallback_count} explanation(s) due to missing items in the response."
+            )
+
     except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
         logger.warning(
-            "Provider '%s' failed for key %s: %s. Falling back to template.",
-            primary.name,
-            record.business_key_values,
+            "Batch provider '%s' failed: %s. Falling back to template for all records.",
+            provider.name,
             e,
         )
-        return fallback.explain_change(record)
+
+        # Batch call failed entirely: generate explanations with template
+        result.explanations = [template.explain_change(r) for r in records_to_explain]
+
+        if provider.name != "template":
+            result.warnings.append(
+                f"⚠️ {provider.name.capitalize()} API failed: {error_msg}. Fell back to template."
+            )
+
+    return result

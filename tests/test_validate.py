@@ -91,3 +91,53 @@ class TestValidateSCD2:
         date_check = [r for r in report.rules if r.name == "date_consistency"]
         assert len(date_check) == 1
         assert date_check[0].status == ValidationStatus.PASS
+
+    def test_overlap_scd2_cases(self):
+        """Test SCD2 overlap checks across various scenarios (Cases 1-5)."""
+        # Case 1 & Case 3: Valid SCD2 history with multiple versions per customer -> Expected = PASS
+        df_valid_history = pl.DataFrame({
+            "customer_id": [101, 101, 101],
+            "effective_from": [date(2026, 6, 1), date(2026, 6, 8), date(2026, 6, 15)],
+            "effective_to": [date(2026, 6, 8), date(2026, 6, 15), None],
+            "is_current": [False, False, True],
+        })
+        report = validate_scd2(df_valid_history, ["customer_id"])
+        overlap_rule = next(r for r in report.rules if r.name == "no_overlapping_dates")
+        assert overlap_rule.status == ValidationStatus.PASS
+
+        # Case 2: Overlapping periods -> Expected = FAIL
+        df_overlapping = pl.DataFrame({
+            "customer_id": [101, 101],
+            "effective_from": [date(2026, 6, 1), date(2026, 6, 8)],
+            "effective_to": [date(2026, 6, 10), None],
+            "is_current": [False, True],
+        })
+        report = validate_scd2(df_overlapping, ["customer_id"])
+        overlap_rule = next(r for r in report.rules if r.name == "no_overlapping_dates")
+        assert overlap_rule.status == ValidationStatus.FAIL
+        assert len(overlap_rule.details) == 1
+        assert "Overlap detected for customer_id=101" in overlap_rule.details[0]
+        assert "2026-06-01 → 2026-06-10" in overlap_rule.details[0]
+        assert "2026-06-08 → NULL" in overlap_rule.details[0]
+
+        # Case 4: NULL effective_to on current row -> Expected = PASS
+        df_null_current = pl.DataFrame({
+            "customer_id": [101, 101],
+            "effective_from": [date(2026, 6, 1), date(2026, 6, 8)],
+            "effective_to": [date(2026, 6, 8), None],
+            "is_current": [False, True],
+        })
+        report = validate_scd2(df_null_current, ["customer_id"])
+        overlap_rule = next(r for r in report.rules if r.name == "no_overlapping_dates")
+        assert overlap_rule.status == ValidationStatus.PASS
+
+        # Case 5: Single record customer -> Expected = PASS
+        df_single_record = pl.DataFrame({
+            "customer_id": [101],
+            "effective_from": [date(2026, 6, 1)],
+            "effective_to": [None],
+            "is_current": [True],
+        })
+        report = validate_scd2(df_single_record, ["customer_id"])
+        overlap_rule = next(r for r in report.rules if r.name == "no_overlapping_dates")
+        assert overlap_rule.status == ValidationStatus.PASS

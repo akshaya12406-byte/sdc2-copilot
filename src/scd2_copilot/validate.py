@@ -1,12 +1,16 @@
 """Lightweight SCD2 output validation.
 
-Runs deterministic validation rules on the SCD2 output DataFrame
-using Polars and DuckDB queries. No Great Expectations dependency.
+Runs deterministic validation rules on the SCD2 output DataFrame.
+No Great Expectations or external database (e.g. DuckDB) dependency for validation.
 """
 
 from __future__ import annotations
 
-import duckdb
+from datetime import date
+import logging
+import time
+import traceback
+
 import polars as pl
 
 from .models import ValidationReport, ValidationRule, ValidationStatus
@@ -118,53 +122,106 @@ def _check_no_overlapping_dates(
 ) -> ValidationRule:
     """For each business key, date ranges [effective_from, effective_to] must not overlap.
 
-    Uses DuckDB self-join for efficient overlap detection.
+    Sorts by business key and effective_from, then verifies that
+    previous_effective_to <= next_effective_from for consecutive records.
     """
-    # Register the DataFrame in DuckDB
-    con = duckdb.connect()
-    con.register("scd2_output", df.to_pandas())
+    logger = logging.getLogger(__name__)
+    start_time = time.perf_counter()
+    logger.info("Validation starting: checking for overlapping dates.")
 
-    key_cols = ", ".join(f"a.{k}" for k in business_key)
-    join_cond = " AND ".join(f"a.{k} = b.{k}" for k in business_key)
-
-    query = f"""
-    SELECT {key_cols}, COUNT(*) as overlap_count
-    FROM scd2_output a
-    JOIN scd2_output b
-      ON {join_cond}
-     AND a.effective_from < COALESCE(b.effective_to, DATE '9999-12-31')
-     AND b.effective_from < COALESCE(a.effective_to, DATE '9999-12-31')
-     AND a.rowid < b.rowid
-    GROUP BY {key_cols}
-    HAVING COUNT(*) > 0
-    """
-
-    try:
-        result = con.execute(query).fetchall()
-    except Exception:
-        # If DuckDB query fails (e.g., rowid not supported), skip gracefully
+    if "effective_from" not in df.columns or "effective_to" not in df.columns:
+        logger.warning("Overlap check skipped: date columns missing from DataFrame.")
         return ValidationRule(
             name="no_overlapping_dates",
             status=ValidationStatus.WARN,
-            message="Could not verify date overlap (query error). Manual check recommended.",
+            message="Required date columns missing. Skipping overlap check.",
         )
-    finally:
-        con.close()
 
-    if result:
-        details = [f"Key {row[:-1]} has {row[-1]} overlapping date range pair(s)" for row in result]
+    for k in business_key:
+        if k not in df.columns:
+            logger.warning("Overlap check skipped: business key column '%s' missing.", k)
+            return ValidationRule(
+                name="no_overlapping_dates",
+                status=ValidationStatus.WARN,
+                message=f"Business key column '{k}' missing. Skipping overlap check.",
+            )
+
+    rows_inspected = df.height
+    logger.info("Inspecting %d rows for overlaps.", rows_inspected)
+
+    try:
+        # Sort DataFrame to process records sequentially by key and date
+        sorted_df = df.sort(business_key + ["effective_from"])
+
+        # Group records by business key values
+        groups: dict[tuple, list[dict]] = {}
+        for row in sorted_df.iter_rows(named=True):
+            k_val = tuple(row[k] for k in business_key)
+            groups.setdefault(k_val, []).append(row)
+
+        overlaps = []
+
+        for key_val, group_rows in groups.items():
+            for i in range(len(group_rows) - 1):
+                row_i = group_rows[i]
+                row_next = group_rows[i + 1]
+
+                from_i = row_i["effective_from"]
+                to_i = row_i["effective_to"]
+                from_next = row_next["effective_from"]
+                to_next = row_next["effective_to"]
+
+                # Check overlap: previous_effective_to is open (None) OR previous_effective_to > next_effective_from
+                if to_i is None or to_i > from_next:
+                    key_str = ", ".join(f"{k}={row_i[k]}" for k in business_key)
+
+                    from_i_str = str(from_i) if from_i is not None else "NULL"
+                    to_i_str = str(to_i) if to_i is not None else "NULL"
+                    from_next_str = str(from_next) if from_next is not None else "NULL"
+                    to_next_str = str(to_next) if to_next is not None else "NULL"
+
+                    detail = (
+                        f"Overlap detected for {key_str}\n"
+                        f"Period A:\n"
+                        f"{from_i_str} → {to_i_str}\n\n"
+                        f"Period B:\n"
+                        f"{from_next_str} → {to_next_str}"
+                    )
+                    overlaps.append(detail)
+
+        elapsed = time.perf_counter() - start_time
+        logger.info(
+            "Overlap check finished. Inspected: %d rows, Overlaps found: %d, Time elapsed: %.4fs",
+            rows_inspected, len(overlaps), elapsed
+        )
+
+        if overlaps:
+            return ValidationRule(
+                name="no_overlapping_dates",
+                status=ValidationStatus.FAIL,
+                message="Overlapping date ranges detected.",
+                details=overlaps,
+            )
+
+        return ValidationRule(
+            name="no_overlapping_dates",
+            status=ValidationStatus.PASS,
+            message="No overlapping validity periods detected.",
+        )
+
+    except Exception as e:
+        elapsed = time.perf_counter() - start_time
+        tb = traceback.format_exc()
+        logger.error(
+            "Exception occurred during overlap validation check after %.4fs:\n%s",
+            elapsed, tb
+        )
         return ValidationRule(
             name="no_overlapping_dates",
             status=ValidationStatus.FAIL,
-            message=f"{len(result)} business key(s) have overlapping date ranges.",
-            details=details,
+            message=f"Validation failed due to error: {e}",
+            details=[f"Error: {e}", f"Traceback:\n{tb}"],
         )
-
-    return ValidationRule(
-        name="no_overlapping_dates",
-        status=ValidationStatus.PASS,
-        message="No overlapping date ranges found.",
-    )
 
 
 def _check_date_consistency(df: pl.DataFrame) -> ValidationRule:

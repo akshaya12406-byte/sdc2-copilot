@@ -18,14 +18,14 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from src.scd2_copilot.config import get_settings, Settings
+from src.scd2_copilot.config import get_settings, LLMProvider
 from src.scd2_copilot.ingestion import load_csv, validate_csv_columns
 from src.scd2_copilot.schema import detect_business_key, detect_tracked_columns
 from src.scd2_copilot.detect_changes import detect_changes
 from src.scd2_copilot.transform_scd2 import apply_scd2
 from src.scd2_copilot.validate import validate_scd2
 from src.scd2_copilot.explain import explain_changes
-from src.scd2_copilot.models import PipelineResult, ValidationStatus
+from src.scd2_copilot.models import ValidationStatus
 
 # ── Page Config ────────────────────────────────────────
 st.set_page_config(
@@ -48,10 +48,35 @@ with st.sidebar:
         help="The date to stamp on new/changed rows (effective_from).",
     )
 
+    # Load settings to check available keys
+    settings = get_settings()
+
+    # Build provider options with availability hints
+    provider_options = ["template"]
+    provider_labels = {"template": "🔧 Template (offline, no API key)"}
+
+    if settings.has_gemini_key:
+        provider_options.insert(0, "gemini")
+        provider_labels["gemini"] = "✅ Gemini (API key configured)"
+    else:
+        provider_options.append("gemini")
+        provider_labels["gemini"] = "❌ Gemini (no API key in .env)"
+
+    if settings.has_groq_key:
+        provider_options.insert(1 if "gemini" in provider_options[:1] else 0, "groq")
+        provider_labels["groq"] = "✅ Groq (API key configured)"
+    else:
+        provider_options.append("groq")
+        provider_labels["groq"] = "❌ Groq (no API key in .env)"
+
+    # Default to gemini if key available, else template
+    default_idx = 0 if settings.has_gemini_key else provider_options.index("template")
+
     llm_choice = st.selectbox(
         "LLM Provider",
-        options=["template", "gemini", "groq"],
-        index=0,
+        options=provider_options,
+        index=default_idx,
+        format_func=lambda x: provider_labels.get(x, x),
         help="Choose the explanation engine. 'template' works without API keys.",
     )
 
@@ -128,9 +153,8 @@ if source_file and target_file:
     # Run pipeline button
     if st.button("🚀 Run SCD2 Pipeline", type="primary", use_container_width=True):
         with st.spinner("Running pipeline..."):
-            settings = get_settings()
-            # Override LLM provider from sidebar
-            settings.llm_provider = llm_choice
+            # Override LLM provider from sidebar selection
+            settings.llm_provider = LLMProvider(llm_choice)
 
             # Step 1: Detect changes
             change_report = detect_changes(
@@ -146,18 +170,16 @@ if source_file and target_file:
             # Step 3: Validate
             validation_report = validate_scd2(scd2_output, business_key)
 
-            # Step 4: Explain
-            explanations = explain_changes(change_report, settings=settings)
-
-            result = PipelineResult(
-                change_report=change_report,
-                scd2_output=scd2_output,
-                validation_report=validation_report,
-                explanations=explanations,
-            )
+            # Step 4: Explain (now returns ExplainResult with warnings)
+            explain_result = explain_changes(change_report, settings=settings)
+            explanations = explain_result.explanations
 
         # ── Results Display ────────────────────────────
         st.success("✅ Pipeline completed!")
+
+        # Show LLM provider warnings (e.g. fallback to template)
+        for warning in explain_result.warnings:
+            st.warning(warning)
 
         # Change Summary
         st.subheader("📊 Change Summary")
@@ -189,7 +211,8 @@ if source_file and target_file:
         if explanations:
             for exp in explanations:
                 key_str = ", ".join(f"{k}={v}" for k, v in exp.business_key_values.items())
-                with st.expander(f"🔹 {exp.change_type.value.upper()} — {key_str}"):
+                icon = "🤖" if exp.provider != "template" else "🔧"
+                with st.expander(f"{icon} {exp.change_type.value.upper()} — {key_str}"):
                     st.write(exp.text)
                     st.caption(f"Provider: {exp.provider}")
         else:

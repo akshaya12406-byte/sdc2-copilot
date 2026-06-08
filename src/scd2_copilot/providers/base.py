@@ -31,3 +31,17 @@ class LLMProvider(ABC):
             An Explanation with the human-readable text.
         """
         ...
+
+    def explain_changes_batch(self, records: list[ChangeRecord]) -> list[Explanation]:
+        """Generate human-readable explanations for a batch of change records.
+
+        Default implementation falls back to calling explain_change sequentially.
+        Providers should override this method to perform efficient batch API calls.
+
+        Args:
+            records: The list of detected change records.
+
+        Returns:
+            A list of Explanations.
+        """
+        return [self.explain_change(r) for r in records]
