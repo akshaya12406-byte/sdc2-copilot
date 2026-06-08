@@ -53,13 +53,13 @@ def detect_business_key(
         name = col.lower()
         # Suffix match
         if any(name.endswith(pat) for pat in _KEY_PATTERNS):
-            score += 10
+            score += 30
         # Exact match for common names
         if name in ("id", "key"):
-            score += 5
+            score += 15
         # Uniqueness in source
         if source_df[col].n_unique() == source_df.height:
-            score += 20
+            score += 10
         candidates.append((col, score))
 
     candidates.sort(key=lambda x: -x[1])
