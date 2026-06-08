@@ -1,0 +1,11 @@
+streamlit
+prefect
+polars
+duckdb
+pandas
+pyarrow
+great-expectations
+python-dotenv
+pydantic
+requests
+tenacity
