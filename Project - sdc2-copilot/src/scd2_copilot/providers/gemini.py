@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 # Each model has a separate daily free-tier quota, so if one is
 # exhausted we can try the next.
 MODEL_CHAIN = [
-    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-3-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
+    "gemini-3.5-flash",
 ]
 
 MAX_RETRIES_PER_MODEL = 2
