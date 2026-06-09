@@ -9,7 +9,7 @@ import logging
 
 import groq as groq_sdk
 
-from ..models import ChangeRecord, ChangeType, Explanation
+from ..models import ChangeRecord, ChangeType, Explanation, LLMMetrics
 from .base import LLMProvider
 from .template import TemplateProvider
 
@@ -50,6 +50,30 @@ class GroqProvider(LLMProvider):
                 temperature=0.3,
             )
             text = response.choices[0].message.content.strip()
+
+            # extract token counts
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                is_estimated = False
+            else:
+                prompt_tokens = max(1, len(prompt) // 4)
+                completion_tokens = max(1, len(text) // 4)
+                total_tokens = prompt_tokens + completion_tokens
+                is_estimated = True
+
+            cost = (prompt_tokens * 0.59 / 1_000_000) + (completion_tokens * 0.79 / 1_000_000)
+            self.last_metrics = LLMMetrics(
+                provider="groq",
+                model=self.MODEL,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=cost,
+                is_estimated=is_estimated,
+            )
         except Exception as e:
             logger.warning("Groq API call failed: %s", e)
             raise
@@ -102,6 +126,30 @@ class GroqProvider(LLMProvider):
             data = json.loads(content)
             items = data.get("explanations", [])
             explanation_map = {item.get("id"): item.get("explanation") for item in items if "id" in item}
+
+            # extract token counts
+            usage = getattr(response, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                is_estimated = False
+            else:
+                prompt_tokens = max(1, len(prompt) // 4)
+                completion_tokens = max(1, len(content) // 4)
+                total_tokens = prompt_tokens + completion_tokens
+                is_estimated = True
+
+            cost = (prompt_tokens * 0.59 / 1_000_000) + (completion_tokens * 0.79 / 1_000_000)
+            self.last_metrics = LLMMetrics(
+                provider="groq",
+                model=self.MODEL,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=cost,
+                is_estimated=is_estimated,
+            )
         except Exception as e:
             logger.warning("Groq batch API call failed: %s", e)
             raise

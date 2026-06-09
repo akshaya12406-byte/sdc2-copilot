@@ -6,7 +6,7 @@ sentences from the change record data.
 
 from __future__ import annotations
 
-from ..models import ChangeRecord, ChangeType, Explanation
+from ..models import ChangeRecord, ChangeType, Explanation, LLMMetrics
 from .base import LLMProvider
 
 
@@ -18,6 +18,15 @@ class TemplateProvider(LLMProvider):
         return "template"
 
     def explain_change(self, record: ChangeRecord) -> Explanation:
+        self.last_metrics = LLMMetrics(
+            provider="template",
+            model="local-templates",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            estimated_cost=0.0,
+            is_estimated=False,
+        )
         key_str = ", ".join(f"{k}={v}" for k, v in record.business_key_values.items())
 
         if record.change_type == ChangeType.NEW:
@@ -51,3 +60,15 @@ class TemplateProvider(LLMProvider):
             text=text,
             provider=self.name,
         )
+
+    def explain_changes_batch(self, records: list[ChangeRecord]) -> list[Explanation]:
+        self.last_metrics = LLMMetrics(
+            provider="template",
+            model="local-templates",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            estimated_cost=0.0,
+            is_estimated=False,
+        )
+        return [self.explain_change(r) for r in records]

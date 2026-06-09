@@ -1,0 +1,2 @@
+customer_id,name,city,tier,effective_from,effective_to,is_current
+101,Ravi,Chennai,Gold,2026-06-07,,true

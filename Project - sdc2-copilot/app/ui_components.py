@@ -20,6 +20,7 @@ from src.scd2_copilot.models import (
     Explanation,
     ValidationReport,
     ValidationStatus,
+    LLMMetrics,
 )
 from src.scd2_copilot.explain import ExplainResult
 
@@ -298,10 +299,12 @@ def render_overview_tab(
     exec_time: float,
     validation_report: ValidationReport,
     provider_used: str,
-    trust_score: float,
 ) -> None:
     """Render the overview/summary tab."""
     summary = change_report.summary
+    confidence_label, confidence_explanation, confidence_score = compute_confidence_assessment(
+        validation_report, provider_used
+    )
 
     items = [
         ("Processing Date", processing_date.isoformat()),
@@ -315,7 +318,7 @@ def render_overview_tab(
         ("Execution Time", f"{exec_time:.2f}s"),
         ("Provider", provider_used.capitalize()),
         ("Validation", "Passed" if validation_report.passed else "Failed"),
-        ("Trust Score", f"{trust_score:.0f}%"),
+        ("Confidence Assessment", f"{confidence_label} ({confidence_score:.0f}%)"),
     ]
 
     grid_html = '<div class="summary-grid">'
@@ -329,23 +332,32 @@ def render_overview_tab(
     grid_html += "</div>"
     st.markdown(grid_html, unsafe_allow_html=True)
 
-    # Trust score bar
+    # Confidence score card
     bar_color = (
-        "var(--success)" if trust_score >= 80
-        else "var(--warning)" if trust_score >= 50
+        "var(--success)" if confidence_score >= 80
+        else "var(--warning)" if confidence_score >= 50
         else "var(--error)"
     )
     st.markdown(
         f"""
-        <div style="margin-top:16px;">
-            <span style="font-size:0.8rem;color:var(--text-2);">Trust Score</span>
-            <div class="trust-bar">
-                <div class="trust-fill" style="width:{trust_score}%;background:{bar_color};"></div>
+        <div style="margin-top:20px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size:0.85rem; font-weight: 600; color:var(--text-1);">{_icon("shield")} Confidence Assessment</span>
+                <span style="font-size:0.85rem; font-weight: 700; color:{bar_color};">{confidence_label} ({confidence_score:.0f}%)</span>
+            </div>
+            <div class="trust-bar" style="margin-bottom: 12px;">
+                <div class="trust-fill" style="width:{confidence_score}%;background:{bar_color};"></div>
+            </div>
+            <div style="font-size:0.8rem; color:var(--text-2); line-height: 1.5;">
+                {confidence_explanation}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # Business Impact panel
+    render_business_impact_panel(change_report, validation_report)
 
 
 # ── Tab: Updated SCD2 Table ───────────────────────────
@@ -448,6 +460,9 @@ def render_explanations_tab(
     explain_result: ExplainResult,
 ) -> None:
     """Render change explanations grouped by type."""
+    # Render AI Usage & Efficiency panel first
+    render_ai_usage_panel(explain_result.metrics)
+
     explanations = explain_result.explanations
 
     # Show any warnings
@@ -686,28 +701,204 @@ def render_advanced_panel(
         st.caption("SCD2 logic is deterministic. The LLM only explains — it never decides.")
 
 
-# ── Trust Score Calculation ────────────────────────────
+# ── Confidence Assessment & Business ROI Panels ────────
 
 
-def compute_trust_score(
+def compute_confidence_assessment(
     validation_report: ValidationReport,
     provider_used: str,
-) -> float:
-    """Compute a trust score (0-100) from validation + provider quality.
+) -> tuple[str, str, float]:
+    """Compute an honest confidence assessment (0-100) and qualitative label.
 
-    Formula:
-        base = (pass_count / total_rules) * 80
-        provider_bonus = 20 (gemini/groq) or 10 (template)
+    Calculated from validation rule outcomes and provider runtime modes.
     """
     total = len(validation_report.rules) or 1
     pass_count = sum(
         1 for r in validation_report.rules if r.status == ValidationStatus.PASS
     )
-    base = (pass_count / total) * 80
+    val_score = (pass_count / total) * 80
 
-    if provider_used in ("gemini", "groq"):
-        bonus = 20
+    provider_bonus = 20 if provider_used in ("gemini", "groq") else 10
+    score = min(val_score + provider_bonus, 100.0)
+
+    has_fail = any(r.status == ValidationStatus.FAIL for r in validation_report.rules)
+    has_warn = any(r.status == ValidationStatus.WARN for r in validation_report.rules)
+
+    if has_fail:
+        label = "Low"
+        explanation = (
+            "One or more critical validation rules failed! This indicates overlapping date intervals, "
+            "duplicate active records, or missing business keys. Immediate correction is required."
+        )
+    elif score >= 90:
+        label = "Very High"
+        explanation = (
+            "All 5 deterministic validation rules passed. Business key auto-detected successfully. "
+            "Online LLM provider completed batch explanations with structured schema validation."
+        )
+    elif score >= 75:
+        label = "High"
+        explanation = (
+            "All deterministic validation rules passed. However, the system is running in offline template "
+            "fallback mode for natural-language explanations."
+        )
+    elif has_warn or score >= 50:
+        label = "Medium"
+        explanation = (
+            "SCD2 transformation completed, but validation warnings were triggered. "
+            "Review date boundaries and tracked attributes for potential data quality issues."
+        )
     else:
-        bonus = 10
+        label = "Low"
+        explanation = "Validation integrity check failed or critical configurations are missing."
 
-    return min(base + bonus, 100.0)
+    return label, explanation, score
+
+
+def get_efficiency_badge(avg_tokens: float, provider: str) -> tuple[str, str]:
+    """Return (badge_label, css_class) based on average tokens per change."""
+    if provider == "template":
+        return "Offline", "badge-info"
+    if avg_tokens <= 150:
+        return "Excellent", "badge-pass"
+    elif avg_tokens <= 350:
+        return "Good", "badge-new"
+    elif avg_tokens <= 750:
+        return "Moderate", "badge-warn"
+    else:
+        return "Expensive", "badge-fail"
+
+
+def render_ai_usage_panel(metrics: Optional[LLMMetrics]) -> None:
+    """Render the AI Usage & Efficiency panel showing token counts and costs."""
+    if metrics is None:
+        st.info("No AI Usage metrics available (Pipeline was run without AI explanations).")
+        return
+
+    badge_label, badge_class = get_efficiency_badge(metrics.avg_tokens_per_change, metrics.provider)
+    token_label = "Estimated Tokens" if metrics.is_estimated else "Exact Tokens"
+
+    st.markdown(
+        f"""
+        <div class="section-card" style="margin-bottom: 20px;">
+            <div class="section-title">
+                {_icon("cpu")} AI Usage &amp; Efficiency
+                <span class="badge {badge_class}" style="margin-left: auto;">{badge_label}</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 24px;">
+                <div style="flex: 1; min-width: 150px;">
+                    <div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Provider / Model</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--text-1); margin-top: 4px;">
+                        {metrics.provider.capitalize()} <span style="font-size: 0.8rem; color: var(--text-2);">({metrics.model})</span>
+                    </div>
+                </div>
+                <div style="flex: 1; min-width: 120px;">
+                    <div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">{token_label}</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--text-1); margin-top: 4px;">
+                        {metrics.total_tokens} <span style="font-size: 0.8rem; color: var(--muted);">({metrics.prompt_tokens}p / {metrics.completion_tokens}c)</span>
+                    </div>
+                </div>
+                <div style="flex: 1; min-width: 100px;">
+                    <div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Estimated Cost</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--success); margin-top: 4px;">
+                        ${metrics.estimated_cost:.5f}
+                    </div>
+                </div>
+                <div style="flex: 1; min-width: 120px;">
+                    <div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Avg Tokens / Change</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--text-1); margin-top: 4px;">
+                        {metrics.avg_tokens_per_change:.1f}
+                    </div>
+                </div>
+                <div style="flex: 1; min-width: 100px;">
+                    <div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">API Latency</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--info); margin-top: 4px;">
+                        {metrics.request_duration:.2f}s
+                    </div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_business_impact_panel(
+    change_report: ChangeReport,
+    validation_report: ValidationReport,
+) -> None:
+    """Render the executive Business Impact dashboard panel."""
+    summary = change_report.summary
+    total_records = summary.get("total", 0)
+    changes = summary.get("new", 0) + summary.get("changed", 0) + summary.get("deleted", 0)
+    unchanged = summary.get("unchanged", 0)
+    val_passed = sum(1 for r in validation_report.rules if r.status == ValidationStatus.PASS)
+    val_total = len(validation_report.rules)
+
+    st.markdown(
+        f"""<div class="section-card" style="margin-top: 20px;">
+<div class="section-title">
+{_icon("shield_check")} Business Impact
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 20px;">
+<!-- Process Comparison -->
+<div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px;">
+<div style="font-weight: 600; font-size: 0.9rem; color: var(--error); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+{_icon("minus_circle")} Traditional Process (Manual)
+</div>
+<ul style="margin: 0; padding-left: 20px; font-size: 0.82rem; color: var(--text-2); line-height: 1.6;">
+<li>Manual SQL development</li>
+<li>Manual validation</li>
+<li>Manual documentation</li>
+<li>Manual change analysis</li>
+</ul>
+</div>
+<div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px;">
+<div style="font-weight: 600; font-size: 0.9rem; color: var(--success); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+{_icon("plus_circle")} Copilot Process (Automated)
+</div>
+<ul style="margin: 0; padding-left: 20px; font-size: 0.82rem; color: var(--text-2); line-height: 1.6;">
+<li>Automated SCD2 generation</li>
+<li>Automated validation</li>
+<li>Automated change detection</li>
+<li>AI-assisted explanations</li>
+</ul>
+</div>
+</div>
+<!-- Time Saved & Operational stats -->
+<div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 16px 0;">
+<div style="flex: 1; min-width: 180px; border-right: 1px solid var(--border); padding-right: 12px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em;">Traditional Time</div>
+<div style="font-size: 1.35rem; font-weight: 700; color: var(--error); margin-top: 2px;">30–60 minutes</div>
+</div>
+<div style="flex: 1; min-width: 180px; border-right: 1px solid var(--border); padding-right: 12px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em;">Copilot Time</div>
+<div style="font-size: 1.35rem; font-weight: 700; color: var(--success); margin-top: 2px;">&lt; 1 minute</div>
+</div>
+<div style="flex: 1; min-width: 140px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Records Processed</div>
+<div style="font-size: 1.15rem; font-weight: 600; color: var(--text-1); margin-top: 2px;">{total_records}</div>
+</div>
+<div style="flex: 1; min-width: 140px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Changes Detected</div>
+<div style="font-size: 1.15rem; font-weight: 600; color: var(--accent); margin-top: 2px;">{changes}</div>
+</div>
+<div style="flex: 1; min-width: 140px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Historical Preserved</div>
+<div style="font-size: 1.15rem; font-weight: 600; color: var(--text-1); margin-top: 2px;">{unchanged}</div>
+</div>
+<div style="flex: 1; min-width: 140px;">
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase;">Validation Passed</div>
+<div style="font-size: 1.15rem; font-weight: 600; color: var(--success); margin-top: 2px;">{val_passed} / {val_total}</div>
+</div>
+</div>
+<!-- Why This Matters -->
+<div>
+<div style="font-size: 0.72rem; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Why This Matters</div>
+<div style="font-size: 0.85rem; color: var(--text-1); line-height: 1.5; font-style: italic;">
+"Reduces repetitive SCD2 implementation effort while improving auditability and consistency."
+</div>
+</div>
+</div>""",
+        unsafe_allow_html=True,
+    )

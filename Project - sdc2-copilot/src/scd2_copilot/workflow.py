@@ -14,7 +14,7 @@ from prefect import flow, task
 
 from .config import Settings, get_settings
 from .detect_changes import detect_changes
-from .explain import explain_changes
+from .explain import explain_changes, ExplainResult
 from .ingestion import load_csv, validate_csv_columns
 from .models import ChangeReport, Explanation, PipelineResult, ValidationReport
 from .schema import detect_business_key, detect_tracked_columns
@@ -96,7 +96,7 @@ def validate_task(
 def explain_task(
     change_report: ChangeReport,
     settings: Settings,
-) -> list[Explanation]:
+) -> ExplainResult:
     """Generate LLM explanations for detected changes."""
     return explain_changes(change_report, settings=settings)
 
@@ -150,11 +150,12 @@ def run_pipeline(
     validation_report = validate_task(scd2_output, business_key)
 
     # Step 6: Explanations
-    explanations = explain_task(change_report, settings)
+    explain_result = explain_task(change_report, settings)
 
     return PipelineResult(
         change_report=change_report,
         scd2_output=scd2_output,
         validation_report=validation_report,
-        explanations=explanations,
+        explanations=explain_result.explanations,
+        metrics=explain_result.metrics,
     )

@@ -42,7 +42,6 @@ from ui_components import (
     render_history_tab,
     render_downloads,
     render_advanced_panel,
-    compute_trust_score,
 )
 
 # ── Page Config ────────────────────────────────────────
@@ -262,14 +261,12 @@ if source_file and target_file:
         tc = st.session_state["tracked_columns"]
         pu = st.session_state["provider_used"]
 
-        trust = compute_trust_score(vr, pu)
-
         tab_overview, tab_table, tab_validation, tab_explain, tab_explorer, tab_history = st.tabs(
             ["Overview", "Updated Table", "Validation", "Explanations", "Explorer", "History"]
         )
 
         with tab_overview:
-            render_overview_tab(cr, bk, tc, processing_date, et, vr, pu, trust)
+            render_overview_tab(cr, bk, tc, processing_date, et, vr, pu)
 
         with tab_table:
             render_table_tab(so, bk)

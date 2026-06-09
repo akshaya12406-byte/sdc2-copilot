@@ -15,7 +15,7 @@ from typing import Any
 from google import genai
 from pydantic import BaseModel, Field
 
-from ..models import ChangeRecord, ChangeType, Explanation
+from ..models import ChangeRecord, ChangeType, Explanation, LLMMetrics
 from .base import LLMProvider
 from .template import TemplateProvider
 
@@ -147,6 +147,33 @@ class GeminiProvider(LLMProvider):
                         result = response.parsed
                     else:
                         result = response.text.strip() if response.text else ""
+
+                    # Extract usage metadata
+                    usage = getattr(response, "usage_metadata", None)
+                    if usage:
+                        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                        completion_tokens = getattr(usage, "candidates_token_count", 0) or 0
+                        total_tokens = getattr(usage, "total_token_count", 0) or 0
+                        is_estimated = False
+                    else:
+                        # Character-based estimation: 4 chars per token roughly
+                        prompt_tokens = max(1, len(prompt) // 4)
+                        completion_tokens = max(1, len(str(result)) // 4)
+                        total_tokens = prompt_tokens + completion_tokens
+                        is_estimated = True
+
+                    # Estimate cost: Prompt: $0.075 / 1M, Completion: $0.30 / 1M
+                    cost = (prompt_tokens * 0.075 / 1_000_000) + (completion_tokens * 0.30 / 1_000_000)
+
+                    self.last_metrics = LLMMetrics(
+                        provider="gemini",
+                        model=model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        estimated_cost=cost,
+                        is_estimated=is_estimated,
+                    )
 
                     # Cache this model for future calls
                     self._working_model = model

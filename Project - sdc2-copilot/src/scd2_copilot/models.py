@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 
 # ── Change types ───────────────────────────────────────
@@ -124,6 +124,22 @@ class Explanation:
 
 
 @dataclass
+class LLMMetrics:
+    """Detailed LLM token usage, cost, and latency metrics."""
+
+    provider: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost: float
+    request_duration: float = 0.0
+    num_changes_explained: int = 0
+    avg_tokens_per_change: float = 0.0
+    is_estimated: bool = False
+
+
+@dataclass
 class PipelineResult:
     """Full output of the SCD2 pipeline."""
 
@@ -133,3 +149,4 @@ class PipelineResult:
     scd2_output: Any
     validation_report: ValidationReport
     explanations: list[Explanation] = field(default_factory=list)
+    metrics: Optional[LLMMetrics] = None

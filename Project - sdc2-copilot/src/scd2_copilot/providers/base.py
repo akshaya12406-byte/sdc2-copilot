@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
-from ..models import ChangeRecord, Explanation
+from ..models import ChangeRecord, Explanation, LLMMetrics
 
 
 class LLMProvider(ABC):
@@ -13,6 +14,9 @@ class LLMProvider(ABC):
     Every provider must implement ``explain_change`` which takes a
     ChangeRecord and returns a human-readable Explanation.
     """
+
+    def __init__(self) -> None:
+        self.last_metrics: Optional[LLMMetrics] = None
 
     @property
     @abstractmethod
