@@ -91,7 +91,7 @@ sdc2-copilot/
 
 ```bash
 # Clone the repo
-git clone [https://github.com/<your-username>/sdc2-copilot.git](https://github.com/akshaya12406-byte/sdc2-copilot.git)
+git clone https://github.com/akshaya12406-byte/sdc2-copilot.git
 cd sdc2-copilot
 
 # Create virtual environment
